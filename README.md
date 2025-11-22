@@ -1,4 +1,4 @@
-# NovaeOS - A Custom Operating System VIBECODED
+# NovaeOS - A Custom Operating System
 
 NovaeOS is a custom x86_64 operating system built from scratch for educational purposes. It includes a bootable kernel, memory management, process scheduling, filesystem, networking, terminal/shell, and a simple GUI.
 

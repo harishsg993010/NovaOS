@@ -115,6 +115,45 @@ process_t *process_create_kernel_task(void (*entry)(void), const char *name, uin
 }
 
 /**
+ * Helper: Manually map a page in a specific page directory
+ * (without switching CR3)
+ */
+static void manual_map_page(uint64_t *pml4, uint64_t virt, uint64_t phys, uint64_t flags) {
+    // Extract indices
+    uint32_t pml4_idx = (virt >> 39) & 0x1FF;
+    uint32_t pdpt_idx = (virt >> 30) & 0x1FF;
+    uint32_t pd_idx = (virt >> 21) & 0x1FF;
+    uint32_t pt_idx = (virt >> 12) & 0x1FF;
+
+    // Get or create PDPT
+    if (!(pml4[pml4_idx] & PAGE_PRESENT)) {
+        uint64_t pdpt_phys = pmm_alloc_page();
+        memset((void *)vmm_phys_to_virt(pdpt_phys), 0, PAGE_SIZE);
+        pml4[pml4_idx] = pdpt_phys | PAGE_FLAGS_USER;
+    }
+    uint64_t *pdpt = (uint64_t *)vmm_phys_to_virt(pml4[pml4_idx] & ~0xFFF);
+
+    // Get or create PD
+    if (!(pdpt[pdpt_idx] & PAGE_PRESENT)) {
+        uint64_t pd_phys = pmm_alloc_page();
+        memset((void *)vmm_phys_to_virt(pd_phys), 0, PAGE_SIZE);
+        pdpt[pdpt_idx] = pd_phys | PAGE_FLAGS_USER;
+    }
+    uint64_t *pd = (uint64_t *)vmm_phys_to_virt(pdpt[pdpt_idx] & ~0xFFF);
+
+    // Get or create PT
+    if (!(pd[pd_idx] & PAGE_PRESENT)) {
+        uint64_t pt_phys = pmm_alloc_page();
+        memset((void *)vmm_phys_to_virt(pt_phys), 0, PAGE_SIZE);
+        pd[pd_idx] = pt_phys | PAGE_FLAGS_USER;
+    }
+    uint64_t *pt = (uint64_t *)vmm_phys_to_virt(pd[pd_idx] & ~0xFFF);
+
+    // Map the page
+    pt[pt_idx] = phys | flags | PAGE_PRESENT;
+}
+
+/**
  * Create a new user mode process
  */
 process_t *process_create_user(uint64_t entry, const char *name, uint32_t priority) {
@@ -150,8 +189,10 @@ process_t *process_create_user(uint64_t entry, const char *name, uint32_t priori
         return NULL;
     }
 
-    // User stack is at fixed virtual address: 0x7FFFFFFFFFF0 (just below 128TB)
-    uint64_t ustack_virt = 0x7FFFFFFFFFF0ULL;
+    // User stack: Use PML4[1] range (512GB+) to avoid conflict with kernel PML4[0]
+    // PML4[0] is reserved for kernel identity mapping (0-4MB)
+    uint64_t ustack_virt_base = 0x8000000000ULL;  // 512GB (start of PML4[1])
+    uint64_t ustack_virt = ustack_virt_base + (4 * PAGE_SIZE);  // Stack top
     proc->user_stack = ustack_virt;
 
     // Create new page directory for user process
@@ -164,23 +205,13 @@ process_t *process_create_user(uint64_t entry, const char *name, uint32_t priori
     }
     proc->page_directory = (uint64_t *)pml4_phys;
 
-    // Map user stack into process address space
-    // We need to temporarily switch to the new page directory to map user pages
-    uint64_t old_cr3 = vmm_get_current_page_directory();
-    vmm_switch_page_directory(pml4_phys);
+    // Allocate and map user pages WITHOUT switching page directories
+    // (Switching is dangerous as kernel code might be in PML4[0])
 
-    // Map user stack pages
-    for (int i = 0; i < 4; i++) {
-        uint64_t virt = ustack_virt - (4 * PAGE_SIZE) + (i * PAGE_SIZE);
-        uint64_t phys = ustack_phys + (i * PAGE_SIZE);
-        vmm_map_page(virt, phys, PAGE_FLAGS_USER);
-    }
-
-    // Allocate and map user code pages at fixed user address 0x400000 (4MB)
-    uint64_t user_code_virt = 0x400000;
+    // Allocate user code pages in PML4[1] range to avoid PML4[0] conflicts
+    uint64_t user_code_virt = 0x8000010000ULL;  // 512GB + 64KB
     uint64_t user_code_phys = pmm_alloc_pages(4);  // 16KB for code
     if (!user_code_phys) {
-        vmm_switch_page_directory(old_cr3);
         vmm_destroy_address_space(pml4_phys);
         pmm_free_pages(kstack_phys, 4);
         pmm_free_pages(ustack_phys, 4);
@@ -188,15 +219,23 @@ process_t *process_create_user(uint64_t entry, const char *name, uint32_t priori
         return NULL;
     }
 
-    // Map user code pages
+    // Manually map pages in the user page directory (without switching CR3)
+    uint64_t *user_pml4 = (uint64_t *)vmm_phys_to_virt(pml4_phys);
+
+    // Map user stack pages (at 0x7FFFFFFFFFF0 - 16KB)
+    for (int i = 0; i < 4; i++) {
+        uint64_t virt = ustack_virt_base + (i * PAGE_SIZE);
+        uint64_t phys = ustack_phys + (i * PAGE_SIZE);
+        // Manually create page tables and map
+        manual_map_page(user_pml4, virt, phys, PAGE_FLAGS_USER);
+    }
+
+    // Map user code pages (at 0x400000)
     for (int i = 0; i < 4; i++) {
         uint64_t virt = user_code_virt + (i * PAGE_SIZE);
         uint64_t phys = user_code_phys + (i * PAGE_SIZE);
-        vmm_map_page(virt, phys, PAGE_FLAGS_USER);
+        manual_map_page(user_pml4, virt, phys, PAGE_FLAGS_USER);
     }
-
-    // Switch back to original page directory to copy code
-    vmm_switch_page_directory(old_cr3);
 
     // Copy user code from kernel space to user code pages
     void *user_code_kernel_ptr = (void *)vmm_phys_to_virt(user_code_phys);
@@ -209,6 +248,13 @@ process_t *process_create_user(uint64_t entry, const char *name, uint32_t priori
     proc->context.rflags = 0x202;  // IF = 1 (interrupts enabled)
     proc->context.cs = 0x1B;       // User code segment (GDT index 3, RPL=3)
     proc->context.ss = 0x23;       // User data segment (GDT index 4, RPL=3)
+    proc->context.ds = 0x23;       // User data segment
+    proc->context.es = 0x23;       // User data segment
+    proc->context.fs = 0x23;       // User data segment
+    proc->context.gs = 0x23;       // User data segment
+
+    vga_printf("[PROC] User process RIP=0x%x RSP=0x%x CS=0x%x SS=0x%x\n",
+               user_code_virt, ustack_virt, proc->context.cs, proc->context.ss);
 
     // Add to process table
     if (add_process(proc) != 0) {

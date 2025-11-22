@@ -6,6 +6,7 @@
 
 #include <kernel/vga.h>
 #include <kernel/string.h>
+#include <kernel/tss.h>
 #include <stdint.h>
 
 // GDT entry structure
@@ -24,34 +25,72 @@ typedef struct gdt_ptr {
     uint64_t base;
 } __attribute__((packed)) gdt_ptr_t;
 
-// GDT with 5 entries:
+// TSS descriptor structure (16 bytes in x86-64)
+typedef struct tss_descriptor {
+    uint16_t limit_low;
+    uint16_t base_low;
+    uint8_t base_mid;
+    uint8_t access;
+    uint8_t granularity;
+    uint8_t base_high;
+    uint32_t base_upper;     // Upper 32 bits of base
+    uint32_t reserved;
+} __attribute__((packed)) tss_descriptor_t;
+
+// GDT with 7 entries:
 // 0: Null descriptor
 // 1: Kernel code (0x08)
 // 2: Kernel data (0x10)
 // 3: User code   (0x18, or 0x1B with RPL=3)
 // 4: User data   (0x20, or 0x23 with RPL=3)
-static gdt_entry_t gdt[5];
+// 5-6: TSS (0x28) - 16-byte descriptor
+static uint64_t gdt[7];  // Changed to uint64_t array for easier TSS handling
 static gdt_ptr_t gdt_ptr;
 
 /**
  * Set a GDT entry
  */
 static void gdt_set_gate(int num, uint32_t base, uint32_t limit, uint8_t access, uint8_t gran) {
-    gdt[num].base_low = (base & 0xFFFF);
-    gdt[num].base_mid = (base >> 16) & 0xFF;
-    gdt[num].base_high = (base >> 24) & 0xFF;
+    gdt_entry_t *entry = (gdt_entry_t *)&gdt[num];
+    entry->base_low = (base & 0xFFFF);
+    entry->base_mid = (base >> 16) & 0xFF;
+    entry->base_high = (base >> 24) & 0xFF;
 
-    gdt[num].limit_low = (limit & 0xFFFF);
-    gdt[num].granularity = (limit >> 16) & 0x0F;
-    gdt[num].granularity |= gran & 0xF0;
-    gdt[num].access = access;
+    entry->limit_low = (limit & 0xFFFF);
+    entry->granularity = (limit >> 16) & 0x0F;
+    entry->granularity |= gran & 0xF0;
+    entry->access = access;
+}
+
+/**
+ * Set TSS descriptor in GDT
+ */
+static void gdt_set_tss(int num, uint64_t base, uint32_t limit) {
+    tss_descriptor_t *tss = (tss_descriptor_t *)&gdt[num];
+
+    tss->limit_low = limit & 0xFFFF;
+    tss->base_low = base & 0xFFFF;
+    tss->base_mid = (base >> 16) & 0xFF;
+    tss->base_high = (base >> 24) & 0xFF;
+    tss->base_upper = (base >> 32) & 0xFFFFFFFF;
+
+    // Access: Present=1, DPL=00, Type=1001 (64-bit TSS available)
+    tss->access = 0x89;
+
+    // Granularity: G=0 (byte granularity)
+    tss->granularity = 0x00;
+
+    tss->reserved = 0;
 }
 
 /**
  * Initialize GDT
  */
 void gdt_init(void) {
-    gdt_ptr.limit = (sizeof(gdt_entry_t) * 5) - 1;
+    // Clear GDT
+    memset(gdt, 0, sizeof(gdt));
+
+    gdt_ptr.limit = sizeof(gdt) - 1;
     gdt_ptr.base = (uint64_t)&gdt;
 
     // Null descriptor
@@ -74,6 +113,12 @@ void gdt_init(void) {
     // User data segment (0x20, with RPL=3 becomes 0x23)
     // Access: Present=1, DPL=11 (user), Type=0010 (data, read/write)
     gdt_set_gate(4, 0, 0xFFFFF, 0xF2, 0xCF);
+
+    // Initialize TSS
+    tss_init();
+
+    // TSS descriptor (0x28) - takes 2 GDT entries (slots 5-6)
+    gdt_set_tss(5, tss_get_address(), tss_get_size() - 1);
 
     // Load GDT
     __asm__ volatile("lgdt %0" : : "m"(gdt_ptr));
@@ -99,5 +144,8 @@ void gdt_init(void) {
         ::: "rax"
     );
 
-    vga_printf("  GDT: Initialized (5 segments: null, kcode, kdata, ucode, udata)\n");
+    // Load TSS into TR register
+    __asm__ volatile("ltr %0" : : "r"((uint16_t)0x28));
+
+    vga_printf("  GDT: Initialized (7 entries including TSS at 0x28)\n");
 }

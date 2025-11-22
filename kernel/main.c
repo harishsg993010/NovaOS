@@ -382,80 +382,21 @@ static void idle_task(void) {
  * User mode test entry point
  * This function will run in Ring 3 and use syscalls
  */
+// Simple user mode test - position independent, no data references
 static void user_mode_entry(void) {
     // This code will run in Ring 3 (user mode)
-    // We'll use inline assembly to make syscalls
+    // Just an infinite loop with syscall to prove we're in user mode
 
-    // Syscall: getpid (SYS_GETPID = 5)
-    int64_t pid;
-    __asm__ volatile(
-        "mov $5, %%rax\n"      // SYS_GETPID
-        "int $0x80\n"
-        : "=a"(pid)
-        :
-        : "memory"
-    );
-
-    // Simple loop to demonstrate user mode execution
-    for (int i = 0; i < 5; i++) {
-        // Syscall: putchar (SYS_PUTCHAR = 15)
-        const char *msg = "[User Mode] Iteration: ";
-        for (const char *p = msg; *p; p++) {
-            __asm__ volatile(
-                "mov $15, %%rax\n"   // SYS_PUTCHAR
-                "mov %0, %%rdi\n"    // Character
-                "int $0x80\n"
-                :
-                : "r"((uint64_t)*p)
-                : "rax", "rdi", "memory"
-            );
-        }
-
-        // Print iteration number
-        char digit = '0' + i;
-        __asm__ volatile(
-            "mov $15, %%rax\n"
-            "mov %0, %%rdi\n"
-            "int $0x80\n"
-            :
-            : "r"((uint64_t)digit)
-            : "rax", "rdi", "memory"
-        );
-
-        // Print newline
-        __asm__ volatile(
-            "mov $15, %%rax\n"
-            "mov %0, %%rdi\n"
-            "int $0x80\n"
-            :
-            : "r"((uint64_t)'\n')
-            : "rax", "rdi", "memory"
-        );
-
-        // Syscall: sleep_ms (SYS_SLEEP = 6) - sleep for 1 second
-        __asm__ volatile(
-            "mov $6, %%rax\n"      // SYS_SLEEP
-            "mov $1000, %%rdi\n"   // 1000 ms
-            "int $0x80\n"
-            :
-            :
-            : "rax", "rdi", "memory"
-        );
-    }
-
-    // Syscall: exit (SYS_EXIT = 0)
-    __asm__ volatile(
-        "mov $0, %%rax\n"      // SYS_EXIT
-        "mov $0, %%rdi\n"      // Exit code 0
-        "int $0x80\n"
-        :
-        :
-        : "rax", "rdi", "memory"
-    );
-
-    // Should never reach here
     while (1) {
-        __asm__ volatile("hlt");
+        // Syscall: getpid (SYS_GETPID = 5) - just to do something
+        __asm__ volatile(
+            "mov $5, %%rax\n"
+            "int $0x80\n"
+            "pause\n"  // Hint to CPU we're spinning
+            :
+            :
+            : "rax", "memory"
+        );
     }
 }
 

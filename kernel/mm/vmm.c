@@ -110,18 +110,22 @@ int vmm_map_page(uint64_t virt, uint64_t phys, uint64_t flags) {
     uint32_t pd_idx = PD_INDEX(virt);
     uint32_t pt_idx = PT_INDEX(virt);
 
+    // Determine flags for intermediate tables
+    // CRITICAL: For user pages, ALL page table levels need USER flag!
+    uint64_t table_flags = (flags & PAGE_USER) ? PAGE_FLAGS_USER : PAGE_FLAGS_KERNEL;
+
     // Get or create PDPT
-    uint64_t pdpt_phys = get_or_create_table(current_pml4, pml4_idx, PAGE_FLAGS_KERNEL);
+    uint64_t pdpt_phys = get_or_create_table(current_pml4, pml4_idx, table_flags);
     if (pdpt_phys == 0) return -1;
     uint64_t *pdpt = (uint64_t *)vmm_phys_to_virt(pdpt_phys);
 
     // Get or create PD
-    uint64_t pd_phys = get_or_create_table(pdpt, pdpt_idx, PAGE_FLAGS_KERNEL);
+    uint64_t pd_phys = get_or_create_table(pdpt, pdpt_idx, table_flags);
     if (pd_phys == 0) return -1;
     uint64_t *pd = (uint64_t *)vmm_phys_to_virt(pd_phys);
 
     // Get or create PT
-    uint64_t pt_phys = get_or_create_table(pd, pd_idx, PAGE_FLAGS_KERNEL);
+    uint64_t pt_phys = get_or_create_table(pd, pd_idx, table_flags);
     if (pt_phys == 0) return -1;
     uint64_t *pt = (uint64_t *)vmm_phys_to_virt(pt_phys);
 
@@ -246,9 +250,14 @@ uint64_t vmm_create_address_space(void) {
         pml4[i] = current_pml4[i];
     }
 
-    // ALSO copy identity mapping (first entry) for kernel code
-    // Some kernel code still executes at low addresses
+    // ALSO copy PML4[0] (kernel identity mapping) for kernel structures (GDT/IDT)
+    // This is SAFE because:
+    // - Kernel pages have KERNEL-only flags, so user mode can't access them
+    // - CPU needs access to GDT/IDT which are in low memory
+    // - User code will use different PML4 entries for their own mappings
+    vga_printf("[VMM] Copying PML4[0]: 0x%x from current_pml4\n", current_pml4[0]);
     pml4[0] = current_pml4[0];
+    vga_printf("[VMM] New PML4 at phys=0x%x, PML4[0]=0x%x\n", pml4_phys, pml4[0]);
 
     return pml4_phys;
 }

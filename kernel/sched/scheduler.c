@@ -145,6 +145,10 @@ void scheduler_schedule(registers_t *regs) {
         current->context.rflags = regs->rflags;
         current->context.cs = regs->cs;
         current->context.ss = regs->ss;
+        current->context.ds = regs->ds;
+        current->context.es = regs->es;
+        current->context.fs = regs->fs;
+        current->context.gs = regs->gs;
 
         // Update state
         if (current->state == PROCESS_STATE_RUNNING) {
@@ -182,6 +186,13 @@ void scheduler_schedule(registers_t *regs) {
     regs->rflags = next->context.rflags;
     regs->cs = next->context.cs;
     regs->ss = next->context.ss;
+    regs->ds = next->context.ds;
+    regs->es = next->context.es;
+    regs->fs = next->context.fs;
+    regs->gs = next->context.gs;
+
+    vga_printf("[SCHED] Restoring to RIP=0x%x RSP=0x%x CS=0x%x\n",
+               regs->rip, regs->rsp, regs->cs);
 
     // Switch page directory if needed
     if (next->page_directory) {
@@ -190,7 +201,9 @@ void scheduler_schedule(registers_t *regs) {
         uint64_t next_cr3 = (uint64_t)next->page_directory;
 
         if (current_cr3 != next_cr3) {
+            vga_printf("[SCHED] Switching CR3: 0x%x -> 0x%x\n", current_cr3, next_cr3);
             __asm__ volatile("mov %0, %%cr3" :: "r"(next_cr3) : "memory");
+            vga_printf("[SCHED] CR3 switched successfully\n");
         }
     }
 }
