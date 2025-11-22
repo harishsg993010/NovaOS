@@ -74,6 +74,10 @@ void vmm_init(void) {
         vmm_map_page(addr, addr, PAGE_FLAGS_KERNEL);
     }
 
+    // Explicitly ensure VGA text buffer at 0xB8000 is mapped
+    // (should already be covered by 4MB identity mapping above)
+    vmm_map_page(0xB8000, 0xB8000, PAGE_FLAGS_KERNEL);
+
     // Map kernel to higher half (already done in boot.S, but ensure it's complete)
     extern uint8_t _kernel_start[];
     extern uint8_t _kernel_end[];
@@ -241,6 +245,10 @@ uint64_t vmm_create_address_space(void) {
     for (uint32_t i = 256; i < 512; i++) {
         pml4[i] = current_pml4[i];
     }
+
+    // ALSO copy identity mapping (first entry) for kernel code
+    // Some kernel code still executes at low addresses
+    pml4[0] = current_pml4[0];
 
     return pml4_phys;
 }

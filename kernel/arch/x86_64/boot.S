@@ -3,31 +3,6 @@
 
 BITS 32
 
-; Multiboot2 header
-section .multiboot
-align 8
-multiboot_start:
-    dd 0xe85250d6                ; Magic number
-    dd 0                         ; Architecture (0 = i386 protected mode)
-    dd multiboot_end - multiboot_start  ; Header length
-    dd 0x100000000 - (0xe85250d6 + 0 + (multiboot_end - multiboot_start))  ; Checksum
-
-    ; Framebuffer tag (optional, for graphics mode)
-    align 8
-    dw 5                         ; Type: framebuffer
-    dw 1                         ; Flags: optional
-    dd 20                        ; Size
-    dd 1024                      ; Width
-    dd 768                       ; Height
-    dd 32                        ; Depth
-
-    ; End tag
-    align 8
-    dw 0                         ; Type: end
-    dw 0                         ; Flags
-    dd 8                         ; Size
-multiboot_end:
-
 ; Bootstrap stack (16KB)
 section .bss
 align 16
@@ -36,6 +11,7 @@ stack_bottom:
 stack_top:
 
 ; Temporary page tables for identity mapping and higher-half
+; We need multiple PD tables to map enough memory
 align 4096
 boot_pml4:
     resb 4096
@@ -43,15 +19,39 @@ boot_pdpt:
     resb 4096
 boot_pd:
     resb 4096
+boot_pt_low:
+    resb 4096  ; Page table for first 2MB (includes VGA at 0xB8000)
 
 ; Code section
 section .text
 global _start
 extern kernel_main
 
+; Multiboot2 header - MUST be at the very start of .text section
+align 8
+multiboot_start:
+    dd 0xe85250d6                ; Magic number
+    dd 0                         ; Architecture (0 = i386 protected mode)
+    dd multiboot_end - multiboot_start  ; Header length
+    dd 0x100000000 - (0xe85250d6 + 0 + (multiboot_end - multiboot_start))  ; Checksum
+
+    ; REMOVED framebuffer tag - we want VGA text mode, not graphics!
+
+    ; End tag
+    align 8
+    dw 0                         ; Type: end
+    dw 0                         ; Flags
+    dd 8                         ; Size
+multiboot_end:
+
+align 16
 _start:
     ; Disable interrupts
     cli
+
+    ; TEST: Write to VGA immediately (before paging)
+    mov dword [0xb8000], 0x4f544f53  ; 'ST' in white on red
+    mov dword [0xb8004], 0x4f524f54  ; 'TR' in white on red
 
     ; Save multiboot info
     mov edi, ebx                 ; Multiboot info structure
@@ -133,12 +133,12 @@ check_long_mode:
 setup_page_tables:
     ; Zero out page tables
     mov edi, boot_pml4
-    mov ecx, 3072                ; 3 pages * 1024 dwords
+    mov ecx, 4096                ; 4 pages * 1024 dwords
     xor eax, eax
     rep stosd
 
-    ; Set up identity mapping and higher-half mapping
-    ; PML4[0] -> PDPT (identity map first 2MB)
+    ; Set up IDENTITY mapping for first 1GB (needed during boot)
+    ; PML4[0] -> PDPT
     mov eax, boot_pdpt
     or eax, 0b11                 ; Present + writable
     mov [boot_pml4], eax
@@ -148,9 +148,44 @@ setup_page_tables:
     or eax, 0b11                 ; Present + writable
     mov [boot_pdpt], eax
 
-    ; Map first 2MB using 2MB pages
-    mov eax, 0x83                ; Present + writable + huge page
+    ; First PD entry: point to page table for first 2MB (includes VGA)
+    ; PD[0] -> boot_pt_low (NOT a huge page, use 4KB pages)
+    mov eax, boot_pt_low
+    or eax, 0b11                 ; Present + writable (NO huge page bit)
     mov [boot_pd], eax
+
+    ; Map first 2MB using 512 * 4KB pages with write-through for VGA
+    mov edi, boot_pt_low
+    xor ebx, ebx                 ; Physical address counter
+    mov ecx, 512                 ; Map 512 * 4KB pages = 2MB
+.map_pt_low:
+    mov eax, ebx
+    or eax, 0x0b                 ; Present + writable + write-through (PWT=bit3)
+    xor edx, edx                 ; High 32 bits
+    mov [edi], eax
+    mov [edi + 4], edx
+    add ebx, 0x1000              ; Next 4KB page address
+    add edi, 8                   ; Next page table entry
+    loop .map_pt_low
+
+    ; Map 2MB-1GB using 511 * 2MB huge pages (start from PD[1])
+    mov edi, boot_pd + 8         ; Start at PD[1] (skip PD[0])
+    mov eax, 0x200083            ; Start at 2MB, Present + writable + huge page
+    xor edx, edx
+    mov ecx, 511                 ; Map 511 * 2MB pages = 1022MB
+.map_pd_huge:
+    mov [edi], eax
+    mov [edi + 4], edx
+    add eax, 0x200000            ; Next 2MB page
+    adc edx, 0
+    add edi, 8
+    loop .map_pd_huge
+
+    ; ALSO set up HIGHER-HALF mapping at 0xFFFF800000000000
+    ; PML4[256] -> same PDPT (maps higher half to same physical memory)
+    mov eax, boot_pdpt
+    or eax, 0b11                 ; Present + writable
+    mov [boot_pml4 + 256*8], eax ; PML4 entry 256
 
     ret
 
@@ -173,11 +208,36 @@ long_mode_start:
     mov gs, ax
     mov ss, ax
 
+    ; Send 'B' to serial port COM1 (0x3F8) - diagnostic
+    mov dx, 0x3F8
+    mov al, 'B'
+    out dx, al
+
     ; Clear the screen (VGA text buffer)
     mov rdi, 0xb8000
     mov rcx, 80 * 25
     mov rax, 0x0f200f20          ; Two spaces with white on black
     rep stosq
+
+    ; Send 'V' to serial - VGA clear done
+    mov dx, 0x3F8
+    mov al, 'V'
+    out dx, al
+
+    ; Write "BOOT OK" to top-left of screen for debugging
+    ; Use register addressing to avoid 64-bit mode addressing issues
+    mov rbx, 0xb8000
+    mov dword [rbx], 0x0f4f0f42      ; 'BO' in white on black
+    mov dword [rbx + 4], 0x0f540f4f  ; 'OT' in white on black
+    mov dword [rbx + 8], 0x0f4f0f20  ; ' O' in white on black
+    mov dword [rbx + 12], 0x07200f4b ; 'K ' in white on black
+
+    ; Send 'K' to serial - VGA write done
+    mov dx, 0x3F8
+    mov al, 'K'
+    out dx, al
+    mov al, 0x0A  ; Newline
+    out dx, al
 
     ; Call kernel main
     call kernel_main

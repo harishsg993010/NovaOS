@@ -9,6 +9,7 @@
 #define KERNEL_SYSCALL_H
 
 #include <stdint.h>
+#include <stddef.h>
 #include <kernel/isr.h>
 
 // System call numbers

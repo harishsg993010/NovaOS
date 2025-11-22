@@ -7,13 +7,17 @@ CC := gcc
 LD := ld
 AR := ar
 
+# Get GCC's include directory for freestanding headers
+GCC_INCLUDE := $(shell $(CC) -print-file-name=include)
+
 # Flags
 ASFLAGS := -f elf64
 CFLAGS := -std=c11 -ffreestanding -O2 -Wall -Wextra -fno-exceptions \
-          -nostdlib -nostdinc -fno-builtin -fno-stack-protector \
-          -mno-red-zone -mcmodel=kernel -mno-mmx -mno-sse -mno-sse2 \
-          -Ikernel/include
-LDFLAGS := -nostdlib -n -T linker.ld
+          -nostdlib -fno-builtin -fno-stack-protector \
+          -mno-red-zone -mcmodel=large -mno-mmx -mno-sse -mno-sse2 \
+          -fno-pic -fno-PIE -static \
+          -Ikernel/include -I$(GCC_INCLUDE)
+LDFLAGS := -nostdlib -n -static -T linker.ld
 
 # Directories
 BUILD_DIR := build
@@ -27,7 +31,7 @@ ISO_FILE := $(BUILD_DIR)/novae.iso
 
 # Source files
 ASM_SOURCES := $(shell find $(KERNEL_DIR) -name '*.S')
-C_SOURCES := $(shell find $(KERNEL_DIR) -name '*.c')
+C_SOURCES := $(shell find $(KERNEL_DIR) -name '*.c') $(shell find lib -name '*.c')
 
 # Object files
 ASM_OBJECTS := $(patsubst %.S,$(BUILD_DIR)/%.o,$(ASM_SOURCES))

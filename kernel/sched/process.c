@@ -176,18 +176,35 @@ process_t *process_create_user(uint64_t entry, const char *name, uint32_t priori
         vmm_map_page(virt, phys, PAGE_FLAGS_USER);
     }
 
-    // Map user code (for simplicity, identity map first 4MB for now)
-    // TODO: Proper ELF loading
-    for (uint64_t addr = entry; addr < entry + 0x400000; addr += PAGE_SIZE) {
-        vmm_map_page(addr, addr, PAGE_FLAGS_USER);
+    // Allocate and map user code pages at fixed user address 0x400000 (4MB)
+    uint64_t user_code_virt = 0x400000;
+    uint64_t user_code_phys = pmm_alloc_pages(4);  // 16KB for code
+    if (!user_code_phys) {
+        vmm_switch_page_directory(old_cr3);
+        vmm_destroy_address_space(pml4_phys);
+        pmm_free_pages(kstack_phys, 4);
+        pmm_free_pages(ustack_phys, 4);
+        kfree(proc);
+        return NULL;
     }
 
-    // Switch back to original page directory
+    // Map user code pages
+    for (int i = 0; i < 4; i++) {
+        uint64_t virt = user_code_virt + (i * PAGE_SIZE);
+        uint64_t phys = user_code_phys + (i * PAGE_SIZE);
+        vmm_map_page(virt, phys, PAGE_FLAGS_USER);
+    }
+
+    // Switch back to original page directory to copy code
     vmm_switch_page_directory(old_cr3);
+
+    // Copy user code from kernel space to user code pages
+    void *user_code_kernel_ptr = (void *)vmm_phys_to_virt(user_code_phys);
+    memcpy(user_code_kernel_ptr, (void *)entry, 16 * 1024);  // Copy 16KB
 
     // Set up initial context for user mode
     memset(&proc->context, 0, sizeof(cpu_context_t));
-    proc->context.rip = entry;
+    proc->context.rip = user_code_virt;  // Execute from user code space, not kernel!
     proc->context.rsp = ustack_virt;
     proc->context.rflags = 0x202;  // IF = 1 (interrupts enabled)
     proc->context.cs = 0x1B;       // User code segment (GDT index 3, RPL=3)

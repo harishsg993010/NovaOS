@@ -8,19 +8,15 @@ ENTRY(_start)
 /* Define sections */
 SECTIONS
 {
-    /* Kernel starts at 1MB physical address */
+    /* Start at 1MB physical address (standard for kernels) */
     . = 0x100000;
 
     _kernel_start = .;
 
-    /* Multiboot header must be early in the file */
-    .boot :
-    {
-        *(.multiboot)
-    }
-
-    /* Read-only code section */
-    .text ALIGN(4K) : AT(ADDR(.text))
+    /* Text section with embedded multiboot header at the start
+     * The multiboot header is now directly in the .text section
+     */
+    .text ALIGN(4K) :
     {
         _text_start = .;
         *(.text)

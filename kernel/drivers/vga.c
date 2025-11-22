@@ -18,8 +18,8 @@ static uint16_t cursor_y = 0;
 // Current color
 static uint8_t current_color = VGA_COLOR_WHITE | (VGA_COLOR_BLACK << 4);
 
-// VGA text buffer
-static uint16_t *vga_buffer = (uint16_t *)VGA_MEMORY;
+// VGA text buffer (initialized in vga_init to avoid issues with static initialization)
+static uint16_t *vga_buffer;
 
 /**
  * Make VGA entry from character and color
@@ -40,6 +40,9 @@ static void vga_putentryat(char c, uint8_t color, uint16_t x, uint16_t y) {
  * Initialize VGA driver
  */
 void vga_init(void) {
+    // Initialize VGA buffer pointer (cast to ensure proper addressing)
+    vga_buffer = (uint16_t *)((uint64_t)VGA_MEMORY);
+
     cursor_x = 0;
     cursor_y = 0;
     current_color = VGA_COLOR_WHITE | (VGA_COLOR_BLACK << 4);

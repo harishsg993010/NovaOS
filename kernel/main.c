@@ -488,12 +488,12 @@ static void test_multitasking(void) {
     vga_puts("  Creating user mode process...\n");
     vga_setcolor(VGA_COLOR_WHITE | (VGA_COLOR_BLACK << 4));
 
-    process_t *user_proc = process_create_user((uint64_t)user_mode_entry, "user_test", 0);
-    if (!user_proc) {
-        vga_puts("  ERROR: Failed to create user mode process!\n");
-    } else {
+    process_t *user_proc = process_create_user((uint64_t)user_mode_entry, "user_test", 10);
+    if (user_proc) {
         vga_printf("  Created user mode process (PID %u)\n", user_proc->pid);
         scheduler_add_process(user_proc);
+    } else {
+        vga_puts("  ERROR: Failed to create user mode process!\n");
     }
 
     // Add tasks to scheduler
